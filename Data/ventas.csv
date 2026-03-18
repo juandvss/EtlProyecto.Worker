@@ -1,0 +1,4 @@
+﻿id,cliente,producto,fecha,cantidad,precio,estado
+3,Pedro,Teclado,2026-03-18,1,45.50,Completado
+4,Ana,Monitor,2026-03-18,2,220.00,Pendiente
+5,Luis,Mouse,2026-03-18,3,20.00,Completado
