@@ -1,6 +1,4 @@
 using Microsoft.Data.SqlClient;
-using System.Net.Http;
-using System.Text.Json;
 
 namespace EtlProyecto.Worker;
 
@@ -24,86 +22,141 @@ public class Worker : BackgroundService
             using SqlConnection connection = new SqlConnection(connectionString);
             await connection.OpenAsync(stoppingToken);
 
-            string selectQuery = "SELECT id, cliente, comentario, fecha FROM dbo.RESEÑAS_FUENTE";
-
-            using SqlCommand selectCommand = new SqlCommand(selectQuery, connection);
-            using SqlDataReader reader = await selectCommand.ExecuteReaderAsync(stoppingToken);
-
-            _logger.LogInformation("Datos extraídos desde la base de datos:");
-
-            while (await reader.ReadAsync(stoppingToken))
-            {
-                int id = reader.GetInt32(0);
-                string cliente = reader.GetString(1);
-                string comentario = reader.GetString(2);
-                DateTime fecha = reader.GetDateTime(3);
-
-                _logger.LogInformation("ID: {Id}, Cliente: {Cliente}, Comentario: {Comentario}", id, cliente, comentario);
-            }
-
-            await reader.CloseAsync();
-
             _logger.LogInformation("Conexión a SQL Server exitosa.");
 
-            string filePath = Path.Combine(AppContext.BaseDirectory, "Data", "ventas.csv");
-            var lines = await File.ReadAllLinesAsync(filePath, stoppingToken);
+            string insertDimCliente = @"
+INSERT INTO dbo.DIM_CLIENTE
+(
+    cliente_id_natural,
+    nombre,
+    apellido,
+    correo,
+    telefono,
+    ciudad,
+    pais
+)
+SELECT
+    c.CustomerID,
+    c.FirstName,
+    c.LastName,
+    c.Email,
+    c.Phone,
+    c.City,
+    c.Country
+FROM dbo.STG_CUSTOMERS c
+WHERE NOT EXISTS
+(
+    SELECT 1
+    FROM dbo.DIM_CLIENTE d
+    WHERE d.cliente_id_natural = c.CustomerID
+);";
 
-            for (int i = 1; i < lines.Length; i++)
+            using (SqlCommand commandCliente = new SqlCommand(insertDimCliente, connection))
             {
-                var columns = lines[i].Split(',');
-
-                string insertQuery = @"
-INSERT INTO dbo.STG_VENTAS (id, cliente, producto, fecha, cantidad, precio, estado)
-VALUES (@id, @cliente, @producto, @fecha, @cantidad, @precio, @estado)";
-
-                using SqlCommand commandInsert = new SqlCommand(insertQuery, connection);
-
-                commandInsert.Parameters.AddWithValue("@id", int.Parse(columns[0]));
-                commandInsert.Parameters.AddWithValue("@cliente", columns[1]);
-                commandInsert.Parameters.AddWithValue("@producto", columns[2]);
-                commandInsert.Parameters.AddWithValue("@fecha", DateTime.Parse(columns[3]));
-                commandInsert.Parameters.AddWithValue("@cantidad", int.Parse(columns[4]));
-                commandInsert.Parameters.AddWithValue("@precio", decimal.Parse(columns[5]));
-                commandInsert.Parameters.AddWithValue("@estado", columns[6]);
-
-                await commandInsert.ExecuteNonQueryAsync(stoppingToken);
+                int rowsCliente = await commandCliente.ExecuteNonQueryAsync(stoppingToken);
+                _logger.LogInformation("Clientes insertados en DIM_CLIENTE: {Total}", rowsCliente);
             }
 
-            _logger.LogInformation("Datos del CSV insertados en STG_VENTAS.");
+            string insertDimProducto = @"
+INSERT INTO dbo.DIM_PRODUCTO
+(
+    producto_id_natural,
+    nombre_producto,
+    categoria,
+    precio_lista
+)
+SELECT
+    p.ProductID,
+    p.ProductName,
+    p.Category,
+    p.Price
+FROM dbo.STG_PRODUCTS p
+WHERE NOT EXISTS
+(
+    SELECT 1
+    FROM dbo.DIM_PRODUCTO d
+    WHERE d.producto_id_natural = p.ProductID
+);";
 
-            var apiUrl = _configuration["ApiSettings:Url"];
-
-            using HttpClient client = new HttpClient();
-            var response = await client.GetAsync(apiUrl, stoppingToken);
-
-            if (response.IsSuccessStatusCode)
+            using (SqlCommand commandProducto = new SqlCommand(insertDimProducto, connection))
             {
-                var json = await response.Content.ReadAsStringAsync(stoppingToken);
-
-                _logger.LogInformation("Datos recibidos de la API:");
-
-                var document = JsonDocument.Parse(json);
-
-                foreach (var item in document.RootElement.EnumerateArray())
-                {
-                    var name = item.GetProperty("name").GetString();
-                    _logger.LogInformation("Usuario: {Nombre}", name);
-                }
+                int rowsProducto = await commandProducto.ExecuteNonQueryAsync(stoppingToken);
+                _logger.LogInformation("Productos insertados en DIM_PRODUCTO: {Total}", rowsProducto);
             }
-            else
+
+            string insertDimTiempo = @"
+INSERT INTO dbo.DIM_TIEMPO
+(
+    fecha,
+    anio,
+    trimestre,
+    mes,
+    nombre_mes,
+    dia,
+    dia_semana,
+    nombre_dia
+)
+SELECT
+    o.OrderDate AS fecha,
+    YEAR(o.OrderDate) AS anio,
+    DATEPART(QUARTER, o.OrderDate) AS trimestre,
+    MONTH(o.OrderDate) AS mes,
+    DATENAME(MONTH, o.OrderDate) AS nombre_mes,
+    DAY(o.OrderDate) AS dia,
+    DATEPART(WEEKDAY, o.OrderDate) AS dia_semana,
+    DATENAME(WEEKDAY, o.OrderDate) AS nombre_dia
+FROM dbo.STG_ORDERS o
+WHERE NOT EXISTS
+(
+    SELECT 1
+    FROM dbo.DIM_TIEMPO d
+    WHERE d.fecha = o.OrderDate
+);";
+
+            using (SqlCommand commandTiempo = new SqlCommand(insertDimTiempo, connection))
             {
-                _logger.LogError("Error al consumir la API.");
+                int rowsTiempo = await commandTiempo.ExecuteNonQueryAsync(stoppingToken);
+                _logger.LogInformation("Fechas insertadas en DIM_TIEMPO: {Total}", rowsTiempo);
             }
 
-            string query = "SELECT COUNT(*) FROM dbo.STG_VENTAS";
-            using SqlCommand command = new SqlCommand(query, connection);
+            string insertDimEstado = @"
+INSERT INTO dbo.DIM_ESTADO_ORDEN
+(
+    estado_id_natural,
+    nombre_estado
+)
+SELECT
+    ROW_NUMBER() OVER (ORDER BY x.Status) + ISNULL((SELECT MAX(estado_id_natural) FROM dbo.DIM_ESTADO_ORDEN), 0) AS estado_id_natural,
+    x.Status
+FROM
+(
+    SELECT DISTINCT Status
+    FROM dbo.STG_ORDERS
+) x
+WHERE NOT EXISTS
+(
+    SELECT 1
+    FROM dbo.DIM_ESTADO_ORDEN d
+    WHERE d.nombre_estado = x.Status
+);";
 
-            var result = await command.ExecuteScalarAsync(stoppingToken);
-            _logger.LogInformation("Cantidad de registros en STG_VENTAS: {Total}", result);
+            using (SqlCommand commandEstado = new SqlCommand(insertDimEstado, connection))
+            {
+                int rowsEstado = await commandEstado.ExecuteNonQueryAsync(stoppingToken);
+                _logger.LogInformation("Estados insertados en DIM_ESTADO_ORDEN: {Total}", rowsEstado);
+            }
+
+            string totalFactQuery = @"SELECT COUNT(*) FROM dbo.FACT_VENTAS;";
+
+            using (SqlCommand commandFact = new SqlCommand(totalFactQuery, connection))
+            {
+                var totalFact = await commandFact.ExecuteScalarAsync(stoppingToken);
+                _logger.LogInformation("Total actual de registros en FACT_VENTAS: {Total}", totalFact);
+            }
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error al conectar con la base de datos o procesar los datos.");
+            _logger.LogError(ex, "Error al cargar dimensiones.");
         }
 
         await Task.Delay(1000, stoppingToken);
