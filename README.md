@@ -1,19 +1,44 @@
 ﻿# ETL Proyecto
 
-Este proyecto es un proceso ETL hecho en .NET, enfocado en la extracción de datos.
+Este proyecto trabaja la carga de dimensiones de un almacén de datos en SQL Server, utilizando un Worker Service desarrollado en .NET.
 
-El programa obtiene información desde:
+El proceso toma la información desde las tablas de staging de la base de datos `AnalisisVentasETL` y carga las dimensiones principales del modelo estrella:
 
-- Un archivo CSV (ventas)
-- Una base de datos (reseñas)
-- Una API (usuarios)
+- `DIM_CLIENTE`
+- `DIM_PRODUCTO`
+- `DIM_TIEMPO`
+- `DIM_ESTADO_ORDEN`
 
-Los datos se leen y se guardan en una tabla llamada STG_VENTAS.
+La carga se realiza de forma incremental, usando validaciones para evitar registros duplicados. Además, el programa consulta la tabla `FACT_VENTAS` para mostrar en consola la cantidad total de registros existentes y confirmar que la estructura analítica sigue disponible.
 
-Al final, el sistema muestra en consola cuántos registros se procesaron.
+## Cómo funciona
 
-## Tecnologías
+1. El Worker se conecta a SQL Server.
+2. Lee los datos desde las tablas de staging.
+3. Inserta la información en las dimensiones del Data Warehouse.
+4. Evita duplicados con la condición `WHERE NOT EXISTS`.
+5. Muestra en consola el resultado de la ejecución y el total actual de registros en `FACT_VENTAS`.
 
-* .NET
-* SQL Server
-* C#
+## Tablas utilizadas
+
+### Staging
+- `STG_CUSTOMERS`
+- `STG_PRODUCTS`
+- `STG_ORDERS`
+- `STG_ORDER_DETAILS`
+
+### Dimensiones
+- `DIM_CLIENTE`
+- `DIM_PRODUCTO`
+- `DIM_TIEMPO`
+- `DIM_ESTADO_ORDEN`
+
+### Tabla de hechos
+- `FACT_VENTAS`
+
+## Tecnologías utilizadas
+
+- .NET
+- C#
+- SQL Server
+- Visual Studio
